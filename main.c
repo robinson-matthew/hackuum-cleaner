@@ -36,14 +36,30 @@ Notes:
 
 #define BLUE_LED_ON() (PORTC |= (1 << BLUE_LED))
 #define BLUE_LED_OFF() (PORTC &= ~(1 << BLUE_LED))
+#define BLUE_LED_TOGGLE() (PORTC ^= (1 << BLUE_LED))
 
 #define GREEN_LED_ON() (PORTC |= (1 << GREEN_LED))
 #define GREEN_LED_OFF() (PORTC &= ~(1 << GREEN_LED))
+#define GREEN_LED_TOGGLE() (PORTC ^= (1 << GREEN_LED))
+
+// Button Interface Macros
+#define BUTTON_ONE PORTD3
+#define BUTTON_ONE_PIN PIND3
+#define BUTTON_TWO PORTD1
+#define BUTTON_TWO_PIN PIND1
+
+// States for the button state machine.
+#define NoPush 1
+#define MaybePush 2
+#define Pushed 3
+#define MaybeNoPush 4
+unsigned char PushState; // The state of the button state machine.
 
 // Define task times up at the top so it is easy to change. Remember
 // our base is about 1 ms.
 #define t1 1000 // For the LED pulse.
 #define t2 250 // For updating the LCD
+#define t3 42 // For checking the buttons on the debounce.
 
 uint8_t splash_message[]  = "Hackuum";
 char output_string[30];
@@ -57,10 +73,11 @@ uint8_t previous_rpm_ticks = 0;
 uint16_t frequency_hz = 0; // The frequency of the motor in Hz.
 uint16_t previous_frequency_hz = 0; // The frequency of the motor in Hz.
 uint8_t lcd_update_flag = 0;
+uint8_t pressed_button = 0; // Global variable for which button was pressed.
 
 
 // Times for tasks called by scheduler.
-volatile unsigned int time1, time2;
+volatile unsigned int time1, time2, time3;
  
 
 // Initialize int0 to happen on a rising edge.
@@ -74,7 +91,7 @@ void interrupt_int0_init(void)
 // Inititalize Timer 0 to determine the RPMs.
 void speed_timer_init(void)
 {
-    TCCR0B |= (1 << CS11) | (1 << CS10); // Prescale w/ 64.i
+    TCCR0B |= (1 << CS11) | (1 << CS10); // Prescale w/ 64.
     // Turn on the interrupt to catch when an overflow occurs. Hopefully this can help us when the motor isn't moving.
     TIMSK0 |= (1 << TOIE0); 
     TCNT0 = 0; // Set counter to 0.
@@ -93,7 +110,18 @@ void motor_pwm_init(void)
     // Set PD4 and PD6 as output pins to control the direction of the motor.
     // These are inputs on the motor driver IC on port A: PD4 is connected to 1A, PD5 to 2A. 
     // Set PD5, OC1A, to be an output for the PWM signal.
-    DDRD |= ((1 << PD5)|(1<<PD4)|(1<<PD6)); 
+    DDRD |= ((1<<PD4)|(1<<PD6)); 
+    // Update! I am trying a test here. I don't want the motor to start rigth away so I'm going
+    // to make the pin that is the outout to the enable pin on the H brigde IC, PD5, an input.
+    // If the user presses the on button it turns it to an output. If they turn it off, it goes back
+    // to being an input.
+
+    // Above didn't work.
+
+    // Begin with the motor braked.
+    PORTD &= ~(1 << PORTD6);
+    PORTD &= ~(1 << PORTD4);
+
 }
 
 // Inititalize Timer 2 to be a system clock with a base of 1 ms.
@@ -108,12 +136,46 @@ void system_clock_init(void)
     TCCR2A = (1 << WGM01); //Turn on clear-on-match.  
 }
 
+/** We have buttons on: PD3, 
+    Set the to inputs (0 on DDR) and set the internal pull ups. This will cause revser logic.
+**/
+void button_init(void)
+{
+    DDRD &= ~((1 << BUTTON_ONE)|(1 << BUTTON_TWO)); // Make an input.
+    PORTD |= ((1 << BUTTON_ONE)|(1 << BUTTON_TWO)); // Set internal pull-up resistor.
+}
+
+
 /** Main tasks to be done in the evnt loop.
 **/
 // Toggle the LED so we have an idea that the system is active.
 void main_task_1(void)
 {
-    RED_LED_TOGGLE();
+    // Recall we have reverse logic going here.
+    // If the button is pressed the bit is clear.
+    if (3 == pressed_button)
+    {   
+        RED_LED_OFF();
+        GREEN_LED_OFF();
+        BLUE_LED_ON();
+        // Brake the motor.
+        PORTD &= ~(1 << PORTD6);
+        PORTD &= ~(1 << PORTD4);
+    }
+    else if(1 == pressed_button)
+    {
+        BLUE_LED_OFF();
+        RED_LED_OFF();
+        GREEN_LED_ON();
+        // Turn the motor on
+        PORTD |= (1 << PORTD4);
+        PORTD &= ~(1 << PORTD6);
+    }else
+    {
+        BLUE_LED_OFF();
+        GREEN_LED_OFF();
+        RED_LED_ON();
+    }
 }
 
 // Update the LCD 
@@ -129,6 +191,79 @@ void main_task_2(void)
         lcd_write_string_4f(output_string);
         lcd_update_flag = 0;
     }
+}
+
+// Check the buttons for a push.
+void main_task_3(void)
+{
+    
+    switch(PushState)
+    {
+        case NoPush:
+            if(bit_is_clear(PIND,PORTD3) || bit_is_clear(PIND,PORTD1)) 
+            {
+                PushState=MaybePush;    
+            }
+            else 
+            {
+                PushState=NoPush;    
+            }
+            break;
+        case MaybePush:
+        
+            if(bit_is_clear(PIND,PORTD3) || bit_is_clear(PIND,PORTD1)) 
+            {
+                 // Note: Bruce Land's code sets the PushFlag here so I'm finding the button that was pressed here.
+                 PushState = Pushed;
+                 //button_push_counter++;
+                 //LED_ON();
+                 
+                 if(bit_is_clear(PIND,PORTD3))
+                 {
+                     pressed_button = 3;
+                     
+                 }else if(bit_is_clear(PIND,PORTD1))
+                 {
+                     pressed_button = 1;
+                
+                 }else
+                 {
+                     pressed_button = 0x00;
+                 }
+            }
+            else PushState=NoPush;
+            
+            break;
+        case Pushed:
+            //PORTC |= (1 << LED);
+            if(bit_is_clear(PIND,PORTD3) || bit_is_clear(PIND,PORTD1)) 
+            {
+                PushState = Pushed;
+                //button_push_counter++;
+                //pressed_button = 0x00;
+            }
+            else 
+            {
+                //pressed_button = 0x00;
+                PushState = MaybeNoPush;
+            }
+            break;
+        case MaybeNoPush:
+            if(bit_is_clear(PIND,PORTD3) || bit_is_clear(PIND,PORTD1))
+            {
+                PushState=Pushed;  
+            } 
+            else 
+            {
+                PushState=NoPush;    
+            }
+            
+            //pressed_button = 0x00;
+           // button_push_counter = 0; // Reset the counter when we go back to the no push state.
+            break;
+    }
+    //button_push_counter += 1;
+    //return(pressed_button);
 }
 
 
@@ -149,6 +284,7 @@ ISR(TIMER2_COMPA_vect)
 {
     if (time1 > 0) --time1;
     if (time2 > 0) --time2;
+    if (time3 > 0) --time3;
 }
 
 // Raise a flag when the motor hasn't moved.
@@ -162,13 +298,21 @@ int main(void)
     interrupt_int0_init();
     lcd_init();
     lcd_write_string_4f(splash_message);
+    // Move to the second line.
+    lcd_check_BF_4();
+    lcd_write_instruction_4f(lcd_SetCursor | lcd_LineTwo);
+    lcd_write_string_4f("Cleaner");
     speed_timer_init();
     system_clock_init();
-    uint8_t duty_cycle = 0;
+    button_init();
+    //uint8_t duty_cycle = 0;
 
     // Initialize the the schedules.
     time1 = t1; 
     time2 = t2;
+    time3 = t3;
+    // Initialize the push state for the buttons.
+    PushState = NoPush;
 
 
     // PD6 is enable, PD4 is 1A, PD5 is 2A. 
@@ -178,9 +322,10 @@ int main(void)
     // To trun the motor, one of the As must be high and the other low.
     // Set PD4 high, PD6 low.
     #if 1
+    //PORTD &= ~(1 << PORTD6);
+    //PORTD |= (1 << PORTD4);
     PORTD &= ~(1 << PORTD6);
-    PORTD |= (1 << PORTD4);
-
+    PORTD &= ~(1 << PORTD4);
     // Wait a software second and then try and turn it on.
     _delay_ms(1000);
     // Turn the enable on to try and turn the motor.
@@ -208,6 +353,7 @@ int main(void)
 
         if (0 == time1){time1=t1;main_task_1();}
         if (0 == time2){time2=t2;main_task_2();}
+        if (0 == time3){time3=t3;main_task_3();}
         #if 1
         OCR1A = 24;
 

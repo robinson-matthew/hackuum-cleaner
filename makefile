@@ -9,7 +9,7 @@ F_CPU = 1000000UL
 AVR_LIBRARY += ../../../embedded-systems/AVR/avr_library
 
 # C and C preprocessor directives, flags, etc.
-CFLAGS = -Os -g -std=gnu99 -Wall
+CFLAGS = -Os -g -std=gnu99 -funsigned-char -Wall
 CPPFLAGS = -DF_CPU=$(F_CPU) -DBAUD=$(BAUD) -I.
 CPPFLAGS += -I$(AVR_LIBRARY)
 
